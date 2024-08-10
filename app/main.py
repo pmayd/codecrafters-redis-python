@@ -1,24 +1,26 @@
 import socket
 import time
 
-HOST = "127.0.0.1"
+HOST = "localhost"
 PORT = 6379
 
 
 def main():
     
-    with socket.create_server((HOST, PORT)) as server_socket:
-        conn, addr = server_socket.accept() # The .accept() method blocks execution and waits for an incoming connection.
+    server_socket = socket.create_server((HOST, PORT), reuse_port=True)
+    conn, addr = server_socket.accept() # wait for client
+    
+    # listen to incoming data from client
+    # for each "PING" respond with "PONG"
+    while True:
+        time.sleep(0.1)
         
-        with conn:
-            print(f"Connected by {addr}")
-            while True:
-                data = conn.recv(1024)
-                if not data:
-                    break
-                
-                if data == b"PING":
-                    conn.sendall(b"+PONG\r\n")
+        data = conn.recv(1024)
+        
+        if not data:
+            break
+    
+        conn.sendall(b"+PONG\r\n")
 
 
 if __name__ == "__main__":
