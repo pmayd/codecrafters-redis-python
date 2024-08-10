@@ -17,9 +17,8 @@ def main():
                 if not data:
                     break
                 
-                for line in data.splitlines():
-                    if line == b"PING":
-                        conn.sendall(b"+PONG\r\n")
+                if data == b"PING":
+                    conn.sendall(b"+PONG\r\n")
 
 
 if __name__ == "__main__":
