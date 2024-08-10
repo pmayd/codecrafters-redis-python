@@ -37,6 +37,7 @@ def service_connection(key, mask):
 
 def main():
     lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     lsock.bind((HOST, PORT))
     lsock.listen()
     print(f"Listening on {(HOST, PORT)}")
