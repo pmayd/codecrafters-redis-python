@@ -1,58 +1,37 @@
-import selectors
-import socket
-import types
+import asyncio
 
 HOST = "localhost"
 PORT = 6379
 
-sel = selectors.DefaultSelector()
 
-
-def accept_wrapper(sock):
-    conn, addr = sock.accept()  # Should be ready to read
-    print(f"Accepted connection from {addr}")
-    conn.setblocking(False)
-    data = types.SimpleNamespace(addr=addr, inb=b"", outb=b"")
-    events = selectors.EVENT_READ | selectors.EVENT_WRITE
-    sel.register(conn, events, data=data)
-
-
-def service_connection(key, mask):
-    sock = key.fileobj
-    data = key.data
-    if mask & selectors.EVENT_READ:
-        recv_data = sock.recv(1024)  # Should be ready to read
-        if recv_data:
-            data.outb += b"+PONG\r\n"
-        else:
-            print(f"Closing connection to {data.addr}")
-            sel.unregister(sock)
-            sock.close()
-    if mask & selectors.EVENT_WRITE:
-        if data.outb:
-            print(f"Echoing {data.outb!r} to {data.addr}")
-            sent = sock.send(data.outb)  # Should be ready to write
-            data.outb = data.outb[sent:]
-
-
-def main():
-    lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    lsock.bind((HOST, PORT))
-    lsock.listen()
-    print(f"Listening on {(HOST, PORT)}")
-
-    lsock.setblocking(False)
-    sel.register(lsock, selectors.EVENT_READ, data=None)
-
+async def handle_client(reader, writer):
     while True:
-        events = sel.select(timeout=None)
-        for key, mask in events:
-            if key.data is None:
-                accept_wrapper(key.fileobj)
-            else:
-                service_connection(key, mask)
+        data = await reader.read(100)
+        print("data received: ", data)
+        message = data.decode()
+
+        if not data:
+            break
+
+        if "PING" in message:
+            writer.write(b"+PONG\r\n")
+            await writer.drain()
+
+    writer.close()
+    await writer.wait_closed()
+
+
+async def main():
+    server = await asyncio.start_server(
+        handle_client, host=HOST, port=PORT, reuse_port=True
+    )
+
+    addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
+    print(f"Serving on {addrs}")
+
+    async with server:
+        await server.serve_forever()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
