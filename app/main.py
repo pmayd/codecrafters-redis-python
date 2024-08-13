@@ -1,4 +1,5 @@
 import asyncio
+from app.redis import Redis
 
 HOST = "localhost"
 PORT = 6379
@@ -8,14 +9,16 @@ async def handle_client(reader, writer):
     while True:
         data = await reader.read(100)
         print("data received: ", data)
-        message = data.decode()
 
         if not data:
             break
 
-        if "PING" in message:
-            writer.write(b"+PONG\r\n")
-            await writer.drain()
+        command = Redis.parse_command(data)
+        match command:
+            case ["PING"]:
+                writer.write(b"+PONG\r\n")
+            case "ECHO", arg:
+                writer.write(Redis.str2bulk(arg))
 
     writer.close()
     await writer.wait_closed()
