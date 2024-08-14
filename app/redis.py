@@ -38,7 +38,7 @@ class Redis:
         return command
 
     @staticmethod
-    def str2bulk(string: str) -> bytes:
+    def str2bulk(string: str | None) -> bytes:
         """Create a RESP bulk string.
 
         Args:
@@ -52,6 +52,9 @@ class Redis:
             >>> redis.create_bulk_string("mylist")
             b"$6\\r\\nmylist\\r\\n"
         """
+        if string is None:
+            return b"$-1\r\n"
+
         return f"${len(string)}\r\n{string}\r\n".encode()
 
 
