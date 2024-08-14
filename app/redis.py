@@ -31,6 +31,8 @@ class Redis:
                 continue
             command.append(part)
 
+        command[0] = command[0].lower()
+
         assert len(command) == number_of_parts, "Invalid message format"
 
         return command

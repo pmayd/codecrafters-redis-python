@@ -15,9 +15,9 @@ async def handle_client(reader, writer):
 
         command = Redis.parse_command(data)
         match command:
-            case ["PING"]:
+            case ["ping"]:
                 writer.write(b"+PONG\r\n")
-            case "ECHO", arg:
+            case "echo", arg:
                 writer.write(Redis.str2bulk(arg))
 
     writer.close()
