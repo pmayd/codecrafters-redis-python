@@ -1,4 +1,11 @@
+import datetime
 import re
+from typing import Literal, NamedTuple
+
+
+class Record(NamedTuple):
+    value: str
+    expires_at: datetime.datetime | None
 
 
 class Redis:

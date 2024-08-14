@@ -1,19 +1,13 @@
 import asyncio
 import datetime
-from typing import NamedTuple
 import argparse
 
-from app.redis import Redis
+from app.redis import Redis, Record
 
 HOST = "localhost"
 DEFAULT_PORT = 6379
 
 DB = {}
-
-
-class Record(NamedTuple):
-    value: str
-    expires_at: datetime.datetime | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,8 +48,10 @@ async def handle_client(reader, writer):
                 if ttl is not None and ttl < datetime.datetime.now():
                     del DB[key]
                     value = None
-
                 writer.write(Redis.str2bulk(value))
+            case "info", section:
+                if section == "replication":
+                    writer.write(Redis.str2bulk("role:master"))
 
     writer.close()
     await writer.wait_closed()
