@@ -1,11 +1,12 @@
 import asyncio
 import datetime
 from typing import NamedTuple
+import argparse
 
 from app.redis import Redis
 
 HOST = "localhost"
-PORT = 6379
+DEFAULT_PORT = 6379
 
 DB = {}
 
@@ -13,6 +14,13 @@ DB = {}
 class Record(NamedTuple):
     value: str
     expires_at: datetime.datetime | None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
+
+    return parser.parse_args()
 
 
 async def handle_client(reader, writer):
@@ -53,9 +61,9 @@ async def handle_client(reader, writer):
     await writer.wait_closed()
 
 
-async def main():
+async def main(port: int):
     server = await asyncio.start_server(
-        handle_client, host=HOST, port=PORT, reuse_port=True
+        handle_client, host=HOST, port=port, reuse_port=True
     )
 
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
@@ -66,4 +74,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(args.port))
