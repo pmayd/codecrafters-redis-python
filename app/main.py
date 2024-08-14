@@ -1,10 +1,18 @@
 import asyncio
+import datetime
+from typing import NamedTuple
+
 from app.redis import Redis
 
 HOST = "localhost"
 PORT = 6379
 
 DB = {}
+
+
+class Record(NamedTuple):
+    value: str
+    expires_at: datetime.datetime | None
 
 
 async def handle_client(reader, writer):
@@ -21,12 +29,24 @@ async def handle_client(reader, writer):
                 writer.write(b"+PONG\r\n")
             case "echo", arg:
                 writer.write(Redis.str2bulk(arg))
+            case "set", key, value, "px", ttl:
+                if key not in DB:
+                    ttl = int(ttl)
+                    expires_at = datetime.datetime.now() + datetime.timedelta(
+                        milliseconds=ttl
+                    )
+                    DB[key] = Record(value, expires_at)
+                    writer.write(Redis.str2bulk("OK"))
             case "set", key, value:
                 if key not in DB:
-                    DB[key] = value
+                    DB[key] = Record(value, None)
                     writer.write(Redis.str2bulk("OK"))
             case "get", key:
-                value = DB.get(key)
+                value, ttl = DB.get(key)
+                if ttl is not None and ttl < datetime.datetime.now():
+                    del DB[key]
+                    value = None
+
                 writer.write(Redis.str2bulk(value))
 
     writer.close()
