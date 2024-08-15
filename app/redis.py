@@ -22,6 +22,16 @@ class RedisServer(UserDict):
         self.role = "master" if not replicaof else "slave"
         super().__init__()
 
+    async def handshake(self) -> None:
+        reader, writer = await asyncio.open_connection(
+            host=self.master_host, port=self.master_port
+        )
+
+        writer.write(str2array("PING"))
+
+        writer.close()
+        await writer.wait_closed()
+
     async def run(self) -> None:
         server = await asyncio.start_server(
             self.handle_client, host=self.host, port=self.port, reuse_port=True
@@ -137,6 +147,31 @@ def str2bulk(*data: list[str | None]) -> bytes:
     data_as_resp = "\r\n".join(data)
 
     return f"${len(data_as_resp)}\r\n{data_as_resp}\r\n".encode()
+
+
+def str2array(*data: list[str | None]) -> bytes:
+    """Create a RESP array.
+
+    Description:
+        RESP encodes arrays in the following way:
+        *<length>\r\n<data>\r\n
+
+    Args:
+        data (list[str | None]): The strings to be converted to a RESP array.
+            Can have a single None element to represent a null array.
+
+    Returns:
+        bytes: The RESP array.
+
+    Examples:
+        >>> redis = Redis()
+        >>> redis.create_array("LLEN", "mylist")
+        b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n"
+    """
+    if len(data) == 1 and data[0] is None:
+        return b"*-1\r\n"
+
+    return f"*{len(data)}\r\n{str2bulk(*data).decode()}".encode()
 
 
 if __name__ == "__main__":
