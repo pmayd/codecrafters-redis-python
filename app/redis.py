@@ -20,34 +20,39 @@ class RedisServer(UserDict):
         self.port = port
         self.master_host = replicaof.split()[0] if replicaof else ""
         self.master_port = replicaof.split()[1] if replicaof else 0
+        self.replicas: set[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = set()
         self.role = "master" if not replicaof else "slave"
         super().__init__()
 
     async def handshake(self) -> None:
-        reader, writer = await asyncio.open_connection(
-            host=self.master_host, port=self.master_port
-        )
+        reader, writer = self.open_connection(self.master_host, self.master_port)
 
         writer.write(str2array("PING"))
+        await writer.drain()
         data = await reader.read(100)
         assert data == str2simple_string("PONG"), "Handshake failed"
 
         writer.write(str2array("REPLCONF", "listening-port", str(self.port)))
+        await writer.drain()
         data = await reader.read(100)
         assert data == str2simple_string("OK"), "Handshake failed"
 
         writer.write(str2array("REPLCONF", "capa", "npsync2"))
+        await writer.drain()
         data = await reader.read(100)
         assert data == str2simple_string("OK"), "Handshake failed"
 
         # initiate a full resynchronization for the first time
         # with unknown replication ID and no offset
         writer.write(str2array("PSYNC", "?", "-1"))
+        await writer.drain()
         data = await reader.read(100)
         assert data.startswith(b"+FULLRESYNC"), "Handshake failed"
 
-        writer.close()
-        await writer.wait_closed()
+    async def update_replicas(self, command: list[str]) -> None:
+        for _, writer in self.replicas:
+            writer.write(str2array(*command))
+            await writer.drain()
 
     async def run(self) -> None:
         server = await asyncio.start_server(
@@ -88,6 +93,7 @@ class RedisServer(UserDict):
                 case "set", key, value:
                     if key not in self.data:
                         self.data[key] = Record(value, None)
+
                         writer.write(str2bulk("OK"))
 
                 case "get", key:
@@ -107,6 +113,8 @@ class RedisServer(UserDict):
                         writer.write(str2bulk(*data))
 
                 case "replconf", *args:
+                    if args[0] == "listening-port":
+                        self.replicas.add((reader, writer))
                     writer.write(str2simple_string("OK"))
 
                 case "psync", *args:
@@ -115,10 +123,22 @@ class RedisServer(UserDict):
                             "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0"
                         )
                     )
+
                     writer.write(empty_rdb_file())
+
+            await writer.drain()
+            if command[0] in ["set", "del"]:
+                await self.update_replicas(command)
 
         writer.close()
         await writer.wait_closed()
+
+    async def open_connection(
+        host: str, port: int
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection(host=host, port=port)
+
+        return reader, writer
 
 
 def parse_command(message: bytes) -> list[str]:
