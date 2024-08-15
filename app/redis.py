@@ -3,6 +3,8 @@ import datetime
 import re
 from collections import UserDict
 from typing import NamedTuple
+import random
+import string
 
 
 class Record(NamedTuple):
@@ -65,7 +67,12 @@ class RedisServer(UserDict):
                     writer.write(str2bulk(value))
                 case "info", section:
                     if section == "replication":
-                        writer.write(str2bulk(f"role:{self.role}"))
+                        data = [
+                            f"role:{self.role}",
+                            f"master_replid:{"".join(random.choices(string.ascii_letters+string.digits, k=40))}",
+                            "master_repl_offset:0",
+                        ]
+                        writer.write(str2bulk(*data))
 
         writer.close()
         await writer.wait_closed()
@@ -104,11 +111,16 @@ def parse_command(message: bytes) -> list[str]:
     return command
 
 
-def str2bulk(string: str | None) -> bytes:
+def str2bulk(*data: list[str | None]) -> bytes:
     """Create a RESP bulk string.
 
+    Description:
+        RESP encodes bulk strings in the following way:
+        $<length>\r\n<data>\r\n
+
     Args:
-        string (str): The string to be converted to a RESP bulk string.
+        data (list[str | None]): The strings to be converted to a RESP bulk string.
+            Can have a single None element to represent a null bulk string.
 
     Returns:
         bytes: The RESP bulk string.
@@ -118,10 +130,13 @@ def str2bulk(string: str | None) -> bytes:
         >>> redis.create_bulk_string("mylist")
         b"$6\\r\\nmylist\\r\\n"
     """
-    if string is None:
+
+    if len(data) == 1 and data[0] is None:
         return b"$-1\r\n"
 
-    return f"${len(string)}\r\n{string}\r\n".encode()
+    data_as_resp = "\r\n".join(data)
+
+    return f"${len(data_as_resp)}\r\n{data_as_resp}\r\n".encode()
 
 
 if __name__ == "__main__":
