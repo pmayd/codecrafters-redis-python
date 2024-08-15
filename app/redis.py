@@ -99,6 +99,8 @@ class RedisServer(UserDict):
                             "master_repl_offset:0",
                         ]
                         writer.write(str2bulk(*data))
+                case "replconf", *args:
+                    writer.write(b"+OK\r\n")
 
         writer.close()
         await writer.wait_closed()
