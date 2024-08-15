@@ -28,6 +28,16 @@ class RedisServer(UserDict):
         )
 
         writer.write(str2array("PING"))
+        data = await reader.read(100)
+        assert data == b"+PONG\r\n", "Handshake failed"
+
+        writer.write(str2array("REPLCONF", "listening-port", str(self.port)))
+        data = await reader.read(100)
+        assert data == b"+OK\r\n", "Handshake failed"
+
+        writer.write(str2array("REPLCONF", "capa", "npsync2"))
+        data = await reader.read(100)
+        assert data == b"+OK\r\n", "Handshake failed"
 
         writer.close()
         await writer.wait_closed()
@@ -171,7 +181,9 @@ def str2array(*data: list[str | None]) -> bytes:
     if len(data) == 1 and data[0] is None:
         return b"*-1\r\n"
 
-    return f"*{len(data)}\r\n{str2bulk(*data).decode()}".encode()
+    data_as_resp = "".join(str2bulk(d).decode() for d in data)
+
+    return f"*{len(data)}\r\n{data_as_resp}".encode()
 
 
 if __name__ == "__main__":
