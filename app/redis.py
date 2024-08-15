@@ -29,17 +29,17 @@ class RedisServer(UserDict):
 
         writer.write(str2array("PING"))
         data = await reader.read(100)
-        assert data == b"+PONG\r\n", "Handshake failed"
+        assert data == str2simple_string("PONG"), "Handshake failed"
 
         writer.write(str2array("REPLCONF", "listening-port", str(self.port)))
         data = await reader.read(100)
-        assert data == b"+OK\r\n", "Handshake failed"
+        assert data == str2simple_string("OK"), "Handshake failed"
 
         writer.write(str2array("REPLCONF", "capa", "npsync2"))
         data = await reader.read(100)
-        assert data == b"+OK\r\n", "Handshake failed"
+        assert data == str2simple_string("OK"), "Handshake failed"
 
-        # initiate a partial resynchronization for the first time
+        # initiate a full resynchronization for the first time
         # with unknown replication ID and no offset
         writer.write(str2array("PSYNC", "?", "-1"))
         data = await reader.read(100)
@@ -70,9 +70,11 @@ class RedisServer(UserDict):
             command = parse_command(data)
             match command:
                 case ["ping"]:
-                    writer.write(b"+PONG\r\n")
+                    writer.write(str2simple_string("PONG"))
+
                 case "echo", arg:
                     writer.write(str2bulk(arg))
+
                 case "set", key, value, "px", ttl:
                     if key not in self.data:
                         ttl = int(ttl)
@@ -81,16 +83,19 @@ class RedisServer(UserDict):
                         )
                         self.data[key] = Record(value, expires_at)
                         writer.write(str2bulk("OK"))
+
                 case "set", key, value:
                     if key not in self.data:
                         self.data[key] = Record(value, None)
                         writer.write(str2bulk("OK"))
+
                 case "get", key:
                     value, ttl = self.data.get(key)
                     if ttl is not None and ttl < datetime.datetime.now():
                         del self.data[key]
                         value = None
                     writer.write(str2bulk(value))
+
                 case "info", section:
                     if section == "replication":
                         data = [
@@ -99,8 +104,16 @@ class RedisServer(UserDict):
                             "master_repl_offset:0",
                         ]
                         writer.write(str2bulk(*data))
+
                 case "replconf", *args:
-                    writer.write(b"+OK\r\n")
+                    writer.write(str2simple_string("OK"))
+
+                case "psync", *args:
+                    writer.write(
+                        str2simple_string(
+                            "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0"
+                        )
+                    )
 
         writer.close()
         await writer.wait_closed()
@@ -116,8 +129,7 @@ def parse_command(message: bytes) -> list[str]:
         list[str]: The command sent by the client.
 
     Examples:
-        >>> redis = Redis()
-        >>> redis.parse_command(b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n")
+        >>> parse_command(b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n")
         ['LLEN', 'mylist']
     """
     message = message.decode()
@@ -139,6 +151,27 @@ def parse_command(message: bytes) -> list[str]:
     return command
 
 
+def str2simple_string(data: str | None) -> bytes:
+    """Create a RESP simple string.
+
+    Description:
+        RESP encodes simple strings in the following way:
+        +<data>\r\n
+
+    Args:
+        data (str | None): The string to be converted to a RESP simple string.
+            Can be None to represent a null simple string.
+
+    Returns:
+        bytes: The RESP simple string.
+
+    Examples:
+        >>> str2simple_string("PONG")
+        b"+PONG\\r\\n"
+    """
+    return f"+{data}\r\n".encode()
+
+
 def str2bulk(*data: list[str | None]) -> bytes:
     """Create a RESP bulk string.
 
@@ -154,8 +187,7 @@ def str2bulk(*data: list[str | None]) -> bytes:
         bytes: The RESP bulk string.
 
     Examples:
-        >>> redis = Redis()
-        >>> redis.create_bulk_string("mylist")
+        >>> str2bulk("mylist")
         b"$6\\r\\nmylist\\r\\n"
     """
 
@@ -182,8 +214,7 @@ def str2array(*data: list[str | None]) -> bytes:
         bytes: The RESP array.
 
     Examples:
-        >>> redis = Redis()
-        >>> redis.create_array("LLEN", "mylist")
+        >>> str2array("LLEN", "mylist")
         b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n"
     """
     if len(data) == 1 and data[0] is None:
@@ -196,4 +227,6 @@ def str2array(*data: list[str | None]) -> bytes:
 
 if __name__ == "__main__":
     print(parse_command(b"*2\r\n$4\r\nLLEN\r\n$6\r\nmylist\r\n"))
+    print(str2simple_string("PONG"))
     print(str2bulk("mylist"))
+    print(str2array("LLEN", "mylist"))
