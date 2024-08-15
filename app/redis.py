@@ -39,6 +39,12 @@ class RedisServer(UserDict):
         data = await reader.read(100)
         assert data == b"+OK\r\n", "Handshake failed"
 
+        # initiate a partial resynchronization for the first time
+        # with unknown replication ID and no offset
+        writer.write(str2array("PSYNC", "?", "-1"))
+        data = await reader.read(100)
+        assert data.startswith(b"+FULLRESYNC"), "Handshake failed"
+
         writer.close()
         await writer.wait_closed()
 
