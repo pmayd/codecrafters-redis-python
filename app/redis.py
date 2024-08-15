@@ -25,7 +25,7 @@ class RedisServer(UserDict):
         super().__init__()
 
     async def handshake(self) -> None:
-        reader, writer = self.open_connection(self.master_host, self.master_port)
+        reader, writer = await open_connection(self.master_host, self.master_port)
 
         writer.write(str2array("PING"))
         await writer.drain()
@@ -133,12 +133,13 @@ class RedisServer(UserDict):
         writer.close()
         await writer.wait_closed()
 
-    async def open_connection(
-        host: str, port: int
-    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        reader, writer = await asyncio.open_connection(host=host, port=port)
 
-        return reader, writer
+async def open_connection(
+    host: str, port: int
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    reader, writer = await asyncio.open_connection(host=host, port=port)
+
+    return reader, writer
 
 
 def parse_command(message: bytes) -> list[str]:
