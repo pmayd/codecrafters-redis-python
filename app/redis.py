@@ -25,6 +25,9 @@ class RedisServer(UserDict):
         super().__init__()
 
     async def handshake(self) -> None:
+        if not self.master_host:
+            return
+
         reader, writer = await open_connection(self.master_host, self.master_port)
 
         writer.write(str2array("PING"))
@@ -46,11 +49,14 @@ class RedisServer(UserDict):
         # with unknown replication ID and no offset
         writer.write(str2array("PSYNC", "?", "-1"))
         await writer.drain()
-        data = await reader.read(100)
+        data = await reader.read(1000)
         assert data.startswith(b"+FULLRESYNC"), "Handshake failed"
+
+        await self.handle_client(reader, writer)
 
     async def update_replicas(self, command: list[str]) -> None:
         for _, writer in self.replicas:
+            print("updating replicas with command: ", command)
             writer.write(str2array(*command))
             await writer.drain()
 
@@ -66,69 +72,72 @@ class RedisServer(UserDict):
             await server.serve_forever()
 
     async def handle_client(self, reader, writer):
+        peer_info = writer.get_extra_info("peername")
+        port = peer_info[1]
         while True:
             data = await reader.read(100)
-            print("data received: ", data)
 
             if not data:
                 break
 
-            command = parse_command(data)
-            match command:
-                case ["ping"]:
-                    writer.write(str2simple_string("PONG"))
+            commands = parse_command(data)
+            for command in commands:
+                match command:
+                    case ["ping"]:
+                        writer.write(str2simple_string("PONG"))
 
-                case "echo", arg:
-                    writer.write(str2bulk(arg))
+                    case "echo", arg:
+                        writer.write(str2bulk(arg))
 
-                case "set", key, value, "px", ttl:
-                    if key not in self.data:
-                        ttl = int(ttl)
-                        expires_at = datetime.datetime.now() + datetime.timedelta(
-                            milliseconds=ttl
+                    case "set", key, value, "px", ttl:
+                        if key not in self.data:
+                            ttl = int(ttl)
+                            expires_at = datetime.datetime.now() + datetime.timedelta(
+                                milliseconds=ttl
+                            )
+                            self.data[key] = Record(value, expires_at)
+                            if port != self.master_port:
+                                writer.write(str2bulk("OK"))
+
+                    case "set", key, value:
+                        if key not in self.data:
+                            self.data[key] = Record(value, None)
+                            if port != self.master_port:
+                                writer.write(str2bulk("OK"))
+
+                    case "get", key:
+                        value, ttl = self.data.get(key)
+                        if ttl is not None and ttl < datetime.datetime.now():
+                            del self.data[key]
+                            value = None
+                        writer.write(str2bulk(value))
+
+                    case "info", section:
+                        if section == "replication":
+                            data = [
+                                f"role:{self.role}",
+                                f"master_replid:{"".join(random.choices(string.ascii_letters+string.digits, k=40))}",
+                                "master_repl_offset:0",
+                            ]
+                            writer.write(str2bulk(*data))
+
+                    case "replconf", *args:
+                        if args[0] == "listening-port":
+                            self.replicas.add((reader, writer))
+                        writer.write(str2simple_string("OK"))
+
+                    case "psync", *args:
+                        writer.write(
+                            str2simple_string(
+                                "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0"
+                            )
                         )
-                        self.data[key] = Record(value, expires_at)
-                        writer.write(str2bulk("OK"))
 
-                case "set", key, value:
-                    if key not in self.data:
-                        self.data[key] = Record(value, None)
+                        writer.write(empty_rdb_file())
 
-                        writer.write(str2bulk("OK"))
-
-                case "get", key:
-                    value, ttl = self.data.get(key)
-                    if ttl is not None and ttl < datetime.datetime.now():
-                        del self.data[key]
-                        value = None
-                    writer.write(str2bulk(value))
-
-                case "info", section:
-                    if section == "replication":
-                        data = [
-                            f"role:{self.role}",
-                            f"master_replid:{"".join(random.choices(string.ascii_letters+string.digits, k=40))}",
-                            "master_repl_offset:0",
-                        ]
-                        writer.write(str2bulk(*data))
-
-                case "replconf", *args:
-                    if args[0] == "listening-port":
-                        self.replicas.add((reader, writer))
-                    writer.write(str2simple_string("OK"))
-
-                case "psync", *args:
-                    writer.write(
-                        str2simple_string(
-                            "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0"
-                        )
-                    )
-
-                    writer.write(empty_rdb_file())
-
-            await writer.drain()
-            if command[0] in ["set", "del"]:
-                await self.update_replicas(command)
+                await writer.drain()
+                if command[0] in ["set", "del"]:
+                    await self.update_replicas(command)
 
         writer.close()
         await writer.wait_closed()
@@ -142,36 +151,45 @@ async def open_connection(
     return reader, writer
 
 
-def parse_command(message: bytes) -> list[str]:
-    """Parse the RESP message and return the command.
+def parse_command(message: bytes) -> list[list[str]]:
+    """Parse the RESP message and return a list of commands.
 
     Args:
         message (bytes): The message received from the client.
 
     Returns:
-        list[str]: The command sent by the client.
+        list[list[str]]: A list of commands sent by the client.
 
     Examples:
         >>> parse_command(b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n")
-        ['LLEN', 'mylist']
+        [['LLEN', 'mylist']]
     """
-    message = message.decode()
-    assert message[0] == "*", "Invalid message format"
+    # throw away all bytes until "*" is found
+    message_start = message.find(b"*")
+    if message_start != -1:
+        message = message[message_start:].decode()
+    else:
+        raise ValueError("Invalid message format. Expected a RESP array.")
 
-    parts = re.split("\\r\\n", message)
-    number_of_parts = int(parts[0][1:])
+    resp_commands = message.split("*")[1:]
+    commands = []
 
-    command = []
-    for part in parts[1:]:
-        if not part or part[0] == "$":
-            continue
-        command.append(part)
+    for resp_command in resp_commands:
+        parts = re.split("\\r\\n", resp_command)
+        number_of_parts = int(parts[0])
 
-    command[0] = command[0].lower()
+        command = []
+        for part in parts[1:]:
+            if not part or part[0] == "$":
+                continue
+            command.append(part)
 
-    assert len(command) == number_of_parts, "Invalid message format"
+        command[0] = command[0].lower()
+        commands.append(command)
 
-    return command
+        assert len(command) == number_of_parts, "Invalid message format"
+
+    return commands
 
 
 def str2simple_string(data: str | None) -> bytes:

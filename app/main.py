@@ -15,11 +15,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def main(server: RedisServer) -> None:
+    await asyncio.gather(server.handshake(), server.run())
+
+
 if __name__ == "__main__":
     args = parse_args()
     server = RedisServer(host=HOST, port=args.port, replicaof=args.replicaof)
 
-    if args.replicaof:
-        asyncio.run(server.handshake())
-
-    asyncio.run(server.run())
+    asyncio.run(main(server))
