@@ -15,17 +15,17 @@ class Record(NamedTuple):
 
 class RedisServer(UserDict):
     # RESP (REdis Serialization Protocol) is the protocol used by Redis to send responses to clients.
-    def __init__(self, host: str, port: int, replicaof: str) -> None:
+    def __init__(self, host: str, port: int, replicaof: list[str]) -> None:
         self.host = host
         self.port = port
-        self.master_host = replicaof.split()[0] if replicaof else ""
-        self.master_port = replicaof.split()[1] if replicaof else 0
+        self.master_host = replicaof.split()[0] if replicaof is not None else ""
+        self.master_port = int(replicaof.split()[1]) if replicaof is not None else 0
         self.replicas: set[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = set()
         self.role = "master" if not replicaof else "slave"
         super().__init__()
 
     async def handshake(self) -> None:
-        if not self.master_host:
+        if not self.master_port:
             return
 
         reader, writer = await open_connection(self.master_host, self.master_port)
@@ -49,10 +49,8 @@ class RedisServer(UserDict):
         # with unknown replication ID and no offset
         writer.write(str2array("PSYNC", "?", "-1"))
         await writer.drain()
-        data = await reader.read(1000)
-        assert data.startswith(b"+FULLRESYNC"), "Handshake failed"
 
-        await self.handle_client(reader, writer)
+        await self.handle_client(reader, writer, replica_conn=True)
 
     async def update_replicas(self, command: list[str]) -> None:
         for _, writer in self.replicas:
@@ -71,23 +69,30 @@ class RedisServer(UserDict):
         async with server:
             await server.serve_forever()
 
-    async def handle_client(self, reader, writer):
-        peer_info = writer.get_extra_info("peername")
-        port = peer_info[1]
+    async def handle_client(self, reader, writer, replica_conn: bool = False):
         while True:
             data = await reader.read(100)
 
             if not data:
                 break
 
-            commands = parse_command(data)
+            while True:
+                try:
+                    commands = parse_command(data)
+                    break
+                except Exception:
+                    data += await reader.read(100)
+                    print(data)
+
+            print("Received:", data)
+            print("Commands:", commands)
             for command in commands:
                 match command:
                     case ["ping"]:
-                        writer.write(str2simple_string("PONG"))
+                        response = [str2simple_string("PONG")]
 
                     case "echo", arg:
-                        writer.write(str2bulk(arg))
+                        response = [str2bulk(arg)]
 
                     case "set", key, value, "px", ttl:
                         if key not in self.data:
@@ -96,21 +101,19 @@ class RedisServer(UserDict):
                                 milliseconds=ttl
                             )
                             self.data[key] = Record(value, expires_at)
-                            if port != self.master_port:
-                                writer.write(str2bulk("OK"))
+                            response = [str2bulk("OK")]
 
                     case "set", key, value:
                         if key not in self.data:
                             self.data[key] = Record(value, None)
-                            if port != self.master_port:
-                                writer.write(str2bulk("OK"))
+                            response = [str2bulk("OK")]
 
                     case "get", key:
                         value, ttl = self.data.get(key)
                         if ttl is not None and ttl < datetime.datetime.now():
                             del self.data[key]
                             value = None
-                        writer.write(str2bulk(value))
+                        response = [str2bulk(value)]
 
                     case "info", section:
                         if section == "replication":
@@ -119,25 +122,34 @@ class RedisServer(UserDict):
                                 f"master_replid:{"".join(random.choices(string.ascii_letters+string.digits, k=40))}",
                                 "master_repl_offset:0",
                             ]
-                            writer.write(str2bulk(*data))
+                            response = [str2bulk(*data)]
 
                     case "replconf", *args:
                         if args[0] == "listening-port":
                             self.replicas.add((reader, writer))
-                        writer.write(str2simple_string("OK"))
+                            response = [str2simple_string("OK")]
+                        elif args[0] == "getack":
+                            response = [str2array("REPLCONF", "ACK", "0")]
 
                     case "psync", *args:
-                        writer.write(
+                        response = [
                             str2simple_string(
                                 "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0"
-                            )
-                        )
+                            ),
+                            empty_rdb_file(),
+                        ]
 
-                        writer.write(empty_rdb_file())
+                if not replica_conn:
+                    for resp in response:
+                        writer.write(resp)
+                        await writer.drain()
 
-                await writer.drain()
-                if command[0] in ["set", "del"]:
-                    await self.update_replicas(command)
+                    if command[0] in ["set", "del"]:
+                        await self.update_replicas(command)
+                else:
+                    if "getack" in command:
+                        writer.write(response[0])
+                        await writer.drain()
 
         writer.close()
         await writer.wait_closed()
@@ -169,25 +181,32 @@ def parse_command(message: bytes) -> list[list[str]]:
     if message_start != -1:
         message = message[message_start:].decode()
     else:
-        raise ValueError("Invalid message format. Expected a RESP array.")
+        if message.startswith(b"+") or message.startswith(b"@"):
+            return []
+        raise ValueError(
+            "Invalid message format. Expected a RESP array or RESP simple string."
+        )
 
-    resp_commands = message.split("*")[1:]
+    resp_commands = re.split(r"[*](\d+)", message)
     commands = []
 
     for resp_command in resp_commands:
-        parts = re.split("\\r\\n", resp_command)
-        number_of_parts = int(parts[0])
+        if not resp_command:
+            continue
+        elif resp_command[0].isdigit():
+            number_of_parts = int(resp_command[0])
+        else:
+            parts = re.split("\\r\\n", resp_command)
 
-        command = []
-        for part in parts[1:]:
-            if not part or part[0] == "$":
-                continue
-            command.append(part)
+            command = []
+            for part in parts[1:]:
+                if not part or part[0] == "$":
+                    continue
+                command.append(part.lower())
 
-        command[0] = command[0].lower()
-        commands.append(command)
+            commands.append(command)
 
-        assert len(command) == number_of_parts, "Invalid message format"
+            assert len(command) == number_of_parts, "Invalid message format"
 
     return commands
 

@@ -10,13 +10,18 @@ DEFAULT_PORT = 6379
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--replicaof", type=str, default="")
+    parser.add_argument(
+        "--replicaof",
+        type=str,
+        help="Specify master host and port in a single string (e.g. 'localhost 6379')",
+    )
 
     return parser.parse_args()
 
 
 async def main(server: RedisServer) -> None:
-    await asyncio.gather(server.handshake(), server.run())
+    asyncio.create_task(server.handshake())
+    await server.run()
 
 
 if __name__ == "__main__":
