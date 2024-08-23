@@ -23,6 +23,7 @@ class RedisServer(UserDict):
         self.replicas: set[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = set()
         self.role = "master" if not replicaof else "slave"
         super().__init__()
+        self.offset = 0
 
     async def handshake(self) -> None:
         if not self.master_port:
@@ -86,7 +87,7 @@ class RedisServer(UserDict):
 
             print("Received:", data)
             print("Commands:", commands)
-            for command in commands:
+            for command, message_length in commands:
                 match command:
                     case ["ping"]:
                         response = [str2simple_string("PONG")]
@@ -129,7 +130,7 @@ class RedisServer(UserDict):
                             self.replicas.add((reader, writer))
                             response = [str2simple_string("OK")]
                         elif args[0] == "getack":
-                            response = [str2array("REPLCONF", "ACK", "0")]
+                            response = [str2array("REPLCONF", "ACK", str(self.offset))]
 
                     case "psync", *args:
                         response = [
@@ -151,6 +152,8 @@ class RedisServer(UserDict):
                         writer.write(response[0])
                         await writer.drain()
 
+                    self.offset += message_length
+
         writer.close()
         await writer.wait_closed()
 
@@ -163,18 +166,18 @@ async def open_connection(
     return reader, writer
 
 
-def parse_command(message: bytes) -> list[list[str]]:
+def parse_command(message: bytes) -> list[tuple[list[str], int]]:
     """Parse the RESP message and return a list of commands.
 
     Args:
         message (bytes): The message received from the client.
 
     Returns:
-        list[list[str]]: A list of commands sent by the client.
+        list[tuple[list[str], int]]: A list of tuples containing the command and the length of the bytes message.
 
     Examples:
-        >>> parse_command(b"*2\\r\\n$4\\r\\nLLEN\\r\\n$6\\r\\nmylist\\r\\n")
-        [['LLEN', 'mylist']]
+        >>> parse_command(b"*3\r\n$8\r\nreplconf\r\n$6\r\ngetack\r\n$1\r\n*\r\n")
+        [(['replconf', 'getack', '*'], 37)]
     """
     # throw away all bytes until "*" is found
     message_start = message.find(b"*")
@@ -204,7 +207,9 @@ def parse_command(message: bytes) -> list[list[str]]:
                     continue
                 command.append(part.lower())
 
-            commands.append(command)
+            commands.append(
+                (command, len(resp_command) + 1 + len(str(number_of_parts).encode()))
+            )
 
             assert len(command) == number_of_parts, "Invalid message format"
 
@@ -300,7 +305,7 @@ def empty_rdb_file() -> bytes:
 
 
 if __name__ == "__main__":
-    print(parse_command(b"*2\r\n$4\r\nLLEN\r\n$6\r\nmylist\r\n"))
+    print(parse_command(b"*3\r\n$8\r\nreplconf\r\n$6\r\ngetack\r\n$1\r\n*\r\n"))
     print(str2simple_string("PONG"))
     print(str2bulk("mylist"))
     print(str2array("LLEN", "mylist"))
