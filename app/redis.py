@@ -140,6 +140,9 @@ class RedisServer(UserDict):
                             empty_rdb_file(),
                         ]
 
+                    case "wait", no_replica, timeout:
+                        response = [str2int(str(len(self.replicas)))]
+
                 if not replica_conn:
                     for resp in response:
                         writer.write(resp)
@@ -290,6 +293,26 @@ def str2array(*data: list[str | None]) -> bytes:
     return f"*{len(data)}\r\n{data_as_resp}".encode()
 
 
+def str2int(data: str) -> bytes:
+    """Create a RESP integer.
+
+    Description:
+        RESP encodes integers in the following way:
+        :<data>\r\n
+
+    Args:
+        data (str): The strings to be converted to a RESP integer.
+
+    Returns:
+        bytes: The RESP integer.
+
+    Examples:
+        >>> str2int("1")
+        b":1\\r\\n"
+    """
+    return f":{data}\r\n".encode()
+
+
 def empty_rdb_file() -> bytes:
     """Create an empty RDB file.
 
@@ -309,3 +332,4 @@ if __name__ == "__main__":
     print(str2simple_string("PONG"))
     print(str2bulk("mylist"))
     print(str2array("LLEN", "mylist"))
+    print(str2int("0"))
